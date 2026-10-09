@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MTD CCR · DSE Performance Analytics</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="progress" class="progress" hidden><div class="progress-bar"></div></div>
+<div id="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">CCR</div>
+      <div class="brand-text">
+        <b>MTD CCR Analytics</b>
+        <span>DSE Field Force</span>
+      </div>
+    </div>
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-section="exec" title="Executive Overview"><span class="nav-ico">◧</span>Executive</button>
+      <button class="nav-item" data-section="discipline" title="Discipline"><span class="nav-ico">◈</span>Discipline</button>
+      <button class="nav-item" data-section="productivity" title="Productivity"><span class="nav-ico">◉</span>Productivity</button>
+      <button class="nav-item is-hidden" data-section="spend" title="Store Time &amp; Spend"><span class="nav-ico">◔</span>Store Time</button>
+      <button class="nav-item" data-section="geo" title="Geographic Analysis"><span class="nav-ico">✜</span>Geography</button>
+      <button class="nav-item" data-section="risk" title="Risk &amp; Insights"><span class="nav-ico">⚠</span>Risk &amp; Insights</button>
+      <button class="nav-item is-hidden" data-section="quality" title="Data Quality"><span class="nav-ico">◪</span>Data Quality</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="param-block is-hidden">
+        <div class="param-title">Score settings</div>
+        <label>Start threshold <input type="time" id="paramStart" value="09:30" step="60"></label>
+        <label>Deviation limit (m) <input type="number" id="paramDev" value="100" min="0"></label>
+        <label>Hours threshold <input type="number" id="paramHours" value="7" min="1" step="0.5"></label>
+        <div class="param-title" style="margin-top:10px">Weights (discipline)</div>
+        <label>Start <input type="number" id="wStart" value="0.40" step="0.05" min="0"></label>
+        <label>On Route <input type="number" id="wRoute" value="0.30" step="0.05" min="0"></label>
+        <label>Deviation <input type="number" id="wDev" value="0.30" step="0.05" min="0"></label>
+        <button class="btn btn-ghost btn-full" id="applySettings">Apply settings</button>
+      </div>
+      <div class="src-info" id="srcInfo">No data loaded</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1>MTD CCR DSE Performance Analytics</h1>
+        <div class="subtitle" id="pageTitle">Executive Overview</div>
+      </div>
+      <div class="topbar-right">
+        <span class="userchip" id="userChip" hidden>
+          <b id="userEmail">—</b>
+          <em id="userRole">viewer</em>
+          <button class="btn btn-ghost btn-sm" id="btnSignout" type="button">Sign out</button>
+        </span>
+        <button class="btn btn-ghost" id="btnFilters"><span class="badge" id="filterCount">0</span> Filters</button>
+        <button class="btn btn-ghost" id="btnReset">Reset</button>
+        <button class="btn btn-ghost" id="btnCsv">CSV</button>
+        <button class="btn btn-ghost" id="btnHtm" title="Download a single HTML file with the dashboard and raw data embedded — share with management">HTML</button>
+        <button class="btn btn-ghost" id="btnDseReport">DSE Report</button>
+        <button class="btn btn-ghost" id="btnActivity" hidden title="Viewer activity report (admin only)">Activity</button>
+        <button class="btn btn-ghost" id="btnPdf">Print / PDF</button>
+        <button class="btn btn-primary" id="btnLoadMain">Load MTD Data</button>
+      </div>
+    </header>
+
+    <div class="filterbar" id="filterbar">
+      <div class="filter-sel"><label>Date from</label><input type="date" id="fDateFrom"></div>
+      <div class="filter-sel"><label>Date to</label><input type="date" id="fDateTo"></div>
+      <div class="filter-sel"><label>Branch</label><select id="fBranchLoc" class="multi"></select></div>
+      <div class="filter-sel"><label>ZSM</label><select id="fZsm" class="multi"></select></div>
+      <div class="filter-sel"><label>ASM</label><select id="fAsm" class="multi"></select></div>
+      <div class="filter-sel"><label>ASO</label><select id="fAso" class="multi"></select></div>
+      <div class="filter-sel"><label>DSE</label><select id="fDse" class="multi"></select></div>
+      <div class="filter-sel"><label>Channel</label><select id="fChannel" class="multi"></select></div>
+      <div class="filter-sel"><label>On Route</label><select id="fOnRoute"><option value="ALL">All</option><option value="YES">On route</option><option value="NO">Off route</option></select></div>
+    </div>
+
+    <div class="content" id="content">
+      <section class="module active" id="section-exec" data-title="Executive Overview"></section>
+      <section class="module" id="section-discipline" data-title="Discipline Analysis"></section>
+      <section class="module" id="section-productivity" data-title="Productivity Analysis"></section>
+      <section class="module" id="section-spend" data-title="Store Time &amp; Spend"></section>
+      <section class="module" id="section-geo" data-title="Geographic Analysis"></section>
+      <section class="module" id="section-risk" data-title="Risk &amp; Insights"></section>
+      <section class="module" id="section-quality" data-title="Data Quality"></section>
+    </div>
+  </main>
+
+  <div class="loadslide" id="loadslide" hidden>
+    <div class="loadslide-title" id="loadslideTitle">Select the MTD CCR data source</div>
+    <button class="btn btn-primary" id="btnSupa" hidden>Load from Supabase</button>
+    <button class="btn btn-primary" id="btnFile">Choose .xlsx file…</button>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden>
+    <button class="btn" id="btnUploadSupa" hidden>Upload .xlsx to server…</button>
+    <input type="file" id="supaFileInput" accept=".xlsx" hidden>
+    <div class="loadslide-note" id="loadNote">Loaded files are read locally in your browser and never uploaded anywhere — unless you choose <b>Upload .xlsx to server…</b></div>
+    <div class="loadslide-status" id="loadslideStatus" hidden></div>
+    <div class="loadbar" id="loadBar" hidden><div class="loadbar-fill"></div></div>
+    <div class="loadslide-actions">
+      <button class="btn btn-ghost" id="btnCloseLoad">← Back to dashboard</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="loadslide" id="loginSlide" hidden>
+    <div class="loadslide-title" id="loginTitle">Sign in — MTD CCR dashboard</div>
+    <form class="login-form" id="loginForm">
+      <label>Email <input type="email" id="loginEmail" autocomplete="username" required></label>
+      <label>Password <input type="password" id="loginPassword" autocomplete="current-password" required></label>
+      <button class="btn btn-primary" type="submit">Sign in</button>
+    </form>
+    <div class="loadslide-note">View-only access for viewers. Only the <b>admin</b> account can import (process) a new MTD CCR workbook.</div>
+    <div class="loadslide-status" id="loginStatus" hidden></div>
+    <div class="loadbar" id="loginBar" hidden><div class="loadbar-fill"></div></div>
+  </div>
+
+  <div class="modal-overlay" id="dseModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <button class="btn btn-ghost btn-sm" id="modalClose">×</button>
+      </div>
+      <div class="modal-body" id="dseModalBody"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="qualityModal" hidden>
+  <div class="modal">
+    <div class="modal-head"><h3>Data Quality Report</h3><button class="btn btn-ghost btn-sm" id="qualityClose">×</button></div>
+    <div class="modal-body" id="qualityBody"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="accessModal" hidden>
+  <div class="modal" style="max-width:960px;width:94vw">
+    <div class="modal-head"><h3>Viewer Activity</h3><button class="btn btn-ghost btn-sm" id="accessClose">×</button></div>
+    <div class="modal-body" id="accessBody">
+      <div class="toolbar">
+        <div class="filter-sel"><label>From</label><input type="date" id="accessFrom"></div>
+        <div class="filter-sel"><label>To</label><input type="date" id="accessTo"></div>
+        <button class="btn btn-ghost" id="accessRefresh">Refresh</button>
+        <span style="flex:1"></span>
+        <button class="btn btn-ghost" id="accessCsv">Export CSV</button>
+        <button class="btn btn-primary" id="accessXlsx">Export XLSX</button>
+      </div>
+      <div id="accessTable"></div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="vendor/plotly.min.js"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/papaparse.min.js"></script>
+<script src="config.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/ccrService.js"></script>
+<script src="js/data.js"></script>
+<script src="js/metrics.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/insights.js"></script>
+<script src="js/insightEngine.js"></script>
+<script src="js/recommendations.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

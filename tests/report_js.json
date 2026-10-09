@@ -1,0 +1,26 @@
+{
+ "totalRows": 85071,
+ "validRows": 80055,
+ "duplicateRows": 177,
+ "missingDate": 0,
+ "missingDse": 0,
+ "missingStartTime": 4697,
+ "missingEndTime": 4697,
+ "missingIntime": 4697,
+ "missingCoordinates": 4835,
+ "invalidDeviation": 4841,
+ "invalidProductivity": 0,
+ "missingDayStart": 4114,
+ "missingOnRoute": 0,
+ "negativeDuration": 9,
+ "missingOrderValue": 4676,
+ "missingChannel": 0,
+ "longDurations": 12790,
+ "missingCallCompliance": 4835,
+ "invalidDistance": 10242,
+ "missingAsmAso": 0,
+ "flags": [
+  "The intime column appears to contain non-standard elapsed time values; daily field start time is taken from day_start_time for discipline scoring."
+ ],
+ "invalidIntime": 4697
+}
