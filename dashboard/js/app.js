@@ -692,8 +692,8 @@
     if (!NS.ccr || !NS.ccr.isConfigured()) { slide.hidden = true; return; }
     document.getElementById('loadslide').hidden = true;
     slide.hidden = false;
-    const email = document.getElementById('loginEmail');
-    if (email) { email.value = ''; email.focus(); }
+    const code = document.getElementById('loginEmpCode');
+    if (code) { code.value = ''; code.focus(); }
     setLoginStatus('', '');
   }
 
@@ -705,7 +705,7 @@
     if (chip) {
       chip.hidden = !authed;
       if (authed) {
-        document.getElementById('userEmail').textContent = session.user.email || '(user)';
+        document.getElementById('userEmail').textContent = session.user.name || session.user.code || '(user)';
         const roleEl = document.getElementById('userRole');
         roleEl.textContent = admin ? 'admin' : (session.user.role || 'viewer');
         roleEl.className = admin ? 'role-admin' : '';
@@ -725,9 +725,11 @@
       const el = document.getElementById(id);
       if (el) el.hidden = viewer;
     });
-    // Admin-only viewer-activity report.
+    // Admin-only viewer-activity report. Needs a Supabase session to record
+    // per-user opens — with the local employee login there is none, so the
+    // report is disabled.
     const activity = document.getElementById('btnActivity');
-    if (activity) activity.hidden = !admin;
+    if (activity) activity.hidden = true;
     if (authed) logAccessOnce();
   }
 
@@ -744,14 +746,14 @@
     if (!form) return;
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email = document.getElementById('loginEmail').value.trim();
+      const empCode = document.getElementById('loginEmpCode').value.trim();
       const pass = document.getElementById('loginPassword').value;
-      if (!email || !pass) { setLoginStatus('Enter your email and password.', 'error'); return; }
+      if (!empCode || !pass) { setLoginStatus('Enter your employee code and password.', 'error'); return; }
       setLoginStatus('Signing in…', '');
       showProgress();
       try {
-        const session = await NS.auth.signIn(email, pass);
-        setLoginStatus('Signed in as ' + (session.user.email || email) + ' (' + (session.user.role || 'role pending') + ')', 'ok');
+        const session = await NS.auth.signIn(empCode, pass);
+        setLoginStatus('Signed in as ' + (session.user.name || empCode) + ' (' + (session.user.role || 'role pending') + ')', 'ok');
         applyRoleUI(session);
         document.getElementById('loginSlide').hidden = true;
         if (NS.ccr && NS.ccr.isConfigured()) loadSupabase();

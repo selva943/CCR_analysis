@@ -232,9 +232,12 @@
     } catch (_) { return null; }
   }
 
-  // Records an app-open for the signed-in user (admin usage report).
+  // Records an app-open for the signed-in user (admin usage report). This
+  // needs a real Supabase session; with the local employee login there is
+  // none, so it is a no-op.
   function logAccess() {
-    if (!isConfigured()) return Promise.resolve(null);
+    const tok = NS.auth && NS.auth.accessToken && NS.auth.accessToken();
+    if (!isConfigured() || !tok) return Promise.resolve(null);
     return rpc('log_access', {}).catch(() => null);
   }
 
