@@ -725,11 +725,10 @@
       const el = document.getElementById(id);
       if (el) el.hidden = viewer;
     });
-    // Admin-only viewer-activity report. Needs a Supabase session to record
-    // per-user opens — with the local employee login there is none, so the
-    // report is disabled.
+    // Admin-only viewer-activity report, keyed to the local admin employee
+    // code (see migration 0007).
     const activity = document.getElementById('btnActivity');
-    if (activity) activity.hidden = true;
+    if (activity) activity.hidden = !admin;
     if (authed) logAccessOnce();
   }
 

@@ -232,20 +232,26 @@
     } catch (_) { return null; }
   }
 
-  // Records an app-open for the signed-in user (admin usage report). This
-  // needs a real Supabase session; with the local employee login there is
-  // none, so it is a no-op.
+  // Records an app-open for the signed-in user (admin usage report). With the
+  // local employee login there is no Supabase JWT, so the employee code/name
+  // from the session is passed to the log_access RPC instead.
   function logAccess() {
-    const tok = NS.auth && NS.auth.accessToken && NS.auth.accessToken();
-    if (!isConfigured() || !tok) return Promise.resolve(null);
-    return rpc('log_access', {}).catch(() => null);
+    if (!isConfigured()) return Promise.resolve(null);
+    const s = NS.auth && NS.auth.load ? NS.auth.load() : null;
+    const u = s && s.user;
+    if (!u || !u.code) return Promise.resolve(null);
+    return rpc('log_access', { p_emp_code: u.code, p_emp_name: u.name, p_role: u.role })
+      .catch(() => null);
   }
 
-  // Admin-only daily per-user activity report.
+  // Admin-only daily per-user activity report. The signed-in admin's employee
+  // code is passed so the RPC can gate access without a Supabase session.
   function getAccessReport(from, to) {
     const p = {};
     if (from) p.p_date_from = from;
     if (to) p.p_date_to = to;
+    const s = NS.auth && NS.auth.load ? NS.auth.load() : null;
+    if (s && s.user && s.user.code) p.p_admin_code = s.user.code;
     return rpc('get_access_report', p);
   }
 
