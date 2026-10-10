@@ -9,6 +9,6 @@
 window.__CCR_CONFIG__ = Object.assign({
   supabaseUrl: 'https://hhtakkehaewqvpvpmhrj.supabase.co', // no trailing slash
   supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhodGFra2VoYWV3cXZwdnBtaHJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTYzNjEsImV4cCI6MjEwNzA5MjM2MX0.EODc3pxHO8SDxVJ2Sxsmh8W8nECocFA_eReSw1OvaOU', // publishable/anon key — safe to expose in the browser
-  apiBase: 'http://localhost:8000', // FastAPI backend origin (row-level visits + upload)
-  importToken: ''    // optional CCR_IMPORT_TOKEN, only if the backend requires it
+  apiBase: 'https://ccr-analysis.onrender.com', // deployed FastAPI backend (imports + row-level visits)
+  importToken: 'a7XdWG5KHFTgmEO-3P3E-hJyFva7JNOE' // must match CCR_IMPORT_TOKEN on the backend
 }, window.__CCR_CONFIG__ || {});
