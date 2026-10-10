@@ -29,6 +29,16 @@
   function isConfigured() { return !!(supabaseUrl() && anonKey()); }
   function apiConfigured() { return !!apiBase(); }
 
+  // With the local employee login there is no Supabase JWT, so 401 responses
+  // are ordinary permission failures — only a real session expiry should drop
+  // the user back to the login screen.
+  function hasAuthToken() {
+    return !!(NS.auth && NS.auth.accessToken && NS.auth.accessToken());
+  }
+  function onUnauthorized() {
+    if (hasAuthToken() && NS.auth && NS.auth.onUnauthorized) NS.auth.onUnauthorized();
+  }
+
   function filterKey(f) {
     const A = a => (a && a.length ? [...a].sort().join('|') : '');
     return [
@@ -77,7 +87,7 @@
       body: JSON.stringify(params || {})
     });
     if (!r.ok) {
-      if (r.status === 401 && NS.auth && NS.auth.onUnauthorized) NS.auth.onUnauthorized();
+      if (r.status === 401) onUnauthorized();
       const t = await r.text().catch(() => '');
       throw new Error('Supabase RPC ' + name + ' failed (HTTP ' + r.status + '): ' + t.slice(0, 300));
     }
@@ -119,7 +129,7 @@
     if (tok) headers['Authorization'] = 'Bearer ' + tok;
     const r = await fetch(url, { headers });
     if (!r.ok) {
-      if (r.status === 401 && NS.auth && NS.auth.onUnauthorized) NS.auth.onUnauthorized();
+      if (r.status === 401) onUnauthorized();
       const t = await r.text().catch(() => '');
       throw new Error('Visit rows failed (HTTP ' + r.status + '): ' + t.slice(0, 300));
     }
@@ -216,7 +226,7 @@
     let body = null;
     try { body = await r.json(); } catch (_) { /* non-JSON error body */ }
     if (!r.ok) {
-      if (r.status === 401 && NS.auth && NS.auth.onUnauthorized) NS.auth.onUnauthorized();
+      if (r.status === 401) onUnauthorized();
       const detail = body && body.detail ? JSON.stringify(body.detail) : '';
       throw new Error('Import failed (HTTP ' + r.status + ') ' + detail + (r.status === 403 ? ' — admin role required to process data' : ''));
     }

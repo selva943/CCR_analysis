@@ -176,7 +176,9 @@ def visits(
     channels: Annotated[list[str] | None, Query()] = None,
     on_route: Annotated[str, Query(alias='onRoute')] = 'ALL',
 ) -> Response:
-    auth.require_user(request)
+    # Public read — the dashboard now uses a local employee login with no
+    # Supabase JWT, and the underlying data is anon-readable on Supabase too
+    # (migration 0006). Writes (/api/import) stay admin/token gated.
     rows = db.query_visits({
         'date_from': date_from, 'date_to': date_to,
         'branch_locs': branch_loc or [], 'zsms': zsms or [],
