@@ -180,11 +180,11 @@
     return out;
   }
 
-  // Row-level visits for the current filters. Primary path when the FastAPI
-  // backend is configured: one gzip request to /api/visits (~10x smaller
-  // transfer and no PostgREST gateway limit). Fallback: get_ccr_visits RPCs in
-  // parallel date slices (function results bypass PostgREST's 1000-row table
-  // cap; slices dodge the gateway response limit).
+  // Row-level visits for the current filters. Primary path: get_ccr_visits
+  // RPCs sliced by date, in parallel — this works anonymously against the
+  // public anon key. The FastAPI /api/visits endpoint is used only when
+  // Supabase is NOT configured (local-only setup): on free hosting tiers the
+  // full-range response is too large for the edge proxy, so it is unreliable.
   async function getVisits(f) {
     const key = filterKey(f);
     const hit = cacheGet(visCache, key, VISIT_TTL, VISIT_CACHE_MAX);
@@ -192,12 +192,11 @@
     if (visPending.has(key)) return visPending.get(key);
     const viaBackend = () =>
       fetchVisitRows(apiBase() + '/api/visits?' + visitsQuery(f).toString());
-    const primary = apiConfigured()
-      ? viaBackend().catch(err => {
-          if (!isConfigured()) throw err;
-          return fetchVisitSlices(f);
-        })
-      : fetchVisitSlices(f);
+    const primary = isConfigured()
+      ? fetchVisitSlices(f)
+      : apiConfigured()
+          ? viaBackend()
+          : Promise.reject(new Error('No data source configured'));
     const p = primary
       .then(rows => {
         if (!Array.isArray(rows)) throw new Error('Visits payload is not an array');
