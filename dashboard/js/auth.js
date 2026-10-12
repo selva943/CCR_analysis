@@ -14,7 +14,7 @@
   const NS = (window.DSE = window.DSE || {});
 
   const KEY = 'ccr.auth';
-  const PASSWORD = 'smsalesreports@321';
+  const PASSWORD = 'solamalai@2026';
 
   const USER_LIST = [
     { code: 'SMT5874',  name: 'PAUL PRATHAP BISSON',  role: 'viewer' },
