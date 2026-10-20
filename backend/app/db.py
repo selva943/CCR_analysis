@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -223,41 +224,72 @@ def _copy_value(field: str, v: Any) -> Any:
     return v
 
 
-def copy_visits(job_id: str, visits: list[dict], source_file: str,
-                chunk: int = 10000) -> None:
-    """Stream visits into ccr_raw with COPY (fast bulk insert)."""
+def _write_batch(cur, batch: list[dict], job_id: str, source_file: str,
+                 fields: tuple[str, ...]) -> None:
+    with cur.copy(
+        'copy public.ccr_raw (' + ', '.join(fields) + ') from stdin'
+    ) as cp:
+        for v in batch:
+            row = []
+            for f in fields:
+                if f == 'import_id':
+                    row.append(uuid.UUID(job_id))
+                    continue
+                if f == 'source_file':
+                    row.append(source_file)
+                    continue
+                if f == 'is_valid':
+                    row.append(bool(v.get('_is_valid', True)))
+                    continue
+                if f == 'dup_key':
+                    row.append(v.get('_dup_key'))
+                    continue
+                if f == 'business_date':
+                    row.append(date.fromisoformat(v['date']))
+                    continue
+                val = v.get(f if f != 'date_obj' else 'dateObj')
+                if isinstance(val, float) and not (
+                        val == val and abs(val) != float('inf')):
+                    val = None  # NaN/Infinity → NULL (JSON.stringify parity)
+                row.append(val)
+            cp.write_row(tuple(row))
+
+
+@contextmanager
+def visit_writer(job_id: str, source_file: str, chunk: int = 10000
+                 ) -> Iterator[Callable[[dict], None]]:
+    """Streaming COPY of visits into ccr_raw (one transaction, `chunk` rows
+    per COPY statement).
+
+    Yields a `write(visit)` callable so the parser can hand visits over one at
+    a time — the whole import never has to be held in memory. If the body
+    raises, the transaction rolls back and nothing is written.
+    """
     fields = COPY_COLS
     with conn() as c, c.transaction():
         with c.cursor() as cur:
-            for start in range(0, len(visits), chunk):
-                part = visits[start:start + chunk]
-                with cur.copy(
-                    'copy public.ccr_raw (' + ', '.join(fields) + ') from stdin'
-                ) as cp:
-                    for v in part:
-                        row = []
-                        for f in fields:
-                            if f == 'import_id':
-                                row.append(uuid.UUID(job_id))
-                                continue
-                            if f == 'source_file':
-                                row.append(source_file)
-                                continue
-                            if f == 'is_valid':
-                                row.append(bool(v.get('_is_valid', True)))
-                                continue
-                            if f == 'dup_key':
-                                row.append(v.get('_dup_key'))
-                                continue
-                            if f == 'business_date':
-                                row.append(date.fromisoformat(v['date']))
-                                continue
-                            val = v.get(f if f != 'date_obj' else 'dateObj')
-                            if isinstance(val, float) and not (
-                                    val == val and abs(val) != float('inf')):
-                                val = None  # NaN/Infinity → NULL (JSON.stringify parity)
-                            row.append(val)
-                        cp.write_row(tuple(row))
+            batch: list[dict] = []
+
+            def write(v: dict) -> None:
+                batch.append(v)
+                if len(batch) >= chunk:
+                    _write_batch(cur, batch, job_id, source_file, fields)
+                    batch.clear()
+
+            yield write
+            if batch:
+                _write_batch(cur, batch, job_id, source_file, fields)
+
+
+def copy_visits(job_id: str, visits: Iterable[dict], source_file: str,
+                chunk: int = 10000) -> None:
+    """Stream visits into ccr_raw with COPY (fast bulk insert).
+
+    Accepts any iterable — a list (legacy callers) or a generator.
+    """
+    with visit_writer(job_id, source_file, chunk=chunk) as write:
+        for v in visits:
+            write(v)
 
 
 # --------------------------------------------------------------------------

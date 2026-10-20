@@ -20,6 +20,10 @@ Contract (verified against the real dashboard behaviour):
   * Cells present but without a <v> value behave like `undefined` (None).
 
 Untrusted input guards: bounded member count and inflated size.
+
+Memory: `iter_rows()` yields one row at a time and accepts a file path (or an
+open binary file), so a 20MB/170k-row workbook never has to sit in RAM. The
+`sheet_rows()` list wrapper is kept for the offline scripts/tests.
 """
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ import io
 import re
 import xml.etree.ElementTree as ET
 import zipfile
-from typing import Any
+from typing import Any, BinaryIO, Iterator, Union
 
 NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -56,23 +60,28 @@ def _text(el) -> str:
 
 def _load_shared_strings(zf: zipfile.ZipFile) -> list[str]:
     try:
-        data = zf.read('xl/sharedStrings.xml')
+        fh = zf.open('xl/sharedStrings.xml')
     except KeyError:
         return []
     out: list[str] = []
-    root = ET.fromstring(data)
-    for si in root.findall(f'{{{NS_MAIN}}}si'):
-        parts: list[str] = []
-        for child in si:
-            tag = child.tag.rsplit('}', 1)[-1]
-            if tag == 't':
-                parts.append(child.text or '')
-            elif tag == 'r':
-                for sub in child:
-                    if sub.tag.rsplit('}', 1)[-1] == 't':
-                        parts.append(sub.text or '')
-            # rPh (phonetic) intentionally skipped, like SheetJS default
-        out.append(''.join(parts))
+    # iterparse + clear: the full shared-string table is never materialized as
+    # one element tree (it can be tens of MB on a 100k-row sheet).
+    with fh:
+        for _ev, el in ET.iterparse(fh, events=('end',)):
+            if el.tag.rsplit('}', 1)[-1] != 'si':
+                continue
+            parts: list[str] = []
+            for child in el:
+                tag = child.tag.rsplit('}', 1)[-1]
+                if tag == 't':
+                    parts.append(child.text or '')
+                elif tag == 'r':
+                    for sub in child:
+                        if sub.tag.rsplit('}', 1)[-1] == 't':
+                            parts.append(sub.text or '')
+                # rPh (phonetic) intentionally skipped, like SheetJS default
+            out.append(''.join(parts))
+            el.clear()
     return out
 
 
@@ -128,58 +137,77 @@ def _cell_value(c, shared: list[str]):
         return None
 
 
+def _open_zip(source: Union[bytes, bytearray, BinaryIO, str]) -> zipfile.ZipFile:
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return zipfile.ZipFile(io.BytesIO(bytes(source)))
+    return zipfile.ZipFile(source)  # path or a seekable binary file
+
+
+def iter_rows(
+    source: Union[bytes, bytearray, BinaryIO, str],
+) -> Iterator[dict[str, Any]]:
+    """Yield the first worksheet as sheet_to_json(defval: '') row dicts, one
+    row at a time.
+
+    `source` may be raw bytes, a path, or an open binary file — pass a path/file
+    for large workbooks so the compressed bytes never have to be in memory.
+    """
+    zf = _open_zip(source)
+    try:
+        infos = zf.infolist()
+        if len(infos) > MAX_ZIP_MEMBERS:
+            raise ValueError('Workbook has too many entries')
+        total = sum(i.file_size for i in infos)
+        if total > MAX_TOTAL_INFLATED:
+            raise ValueError('Workbook is too large')
+        shared = _load_shared_strings(zf)
+        path = _first_sheet_path(zf)
+
+        headers: dict[int, str] = {}
+        last_r = 0
+        with zf.open(path) as fh:
+            # iterparse on a file handle: rows are the events we materialize.
+            for _event, row_el in ET.iterparse(fh, events=('end',)):
+                if row_el.tag.rsplit('}', 1)[-1] != 'row':
+                    continue
+                r_attr = row_el.get('r')
+                row_no = int(r_attr) if r_attr else last_r + 1
+                last_r = row_no
+                cells: dict[int, Any] = {}
+                has_value = False
+                for c in row_el:
+                    if c.tag.rsplit('}', 1)[-1] != 'c':
+                        continue
+                    ref = c.get('r') or ''
+                    ci = _col_index(ref)
+                    if ci < 0:
+                        continue
+                    val = _cell_value(c, shared)
+                    cells[ci] = val
+                    if val is not None:
+                        has_value = True
+                row_el.clear()  # keep memory flat for 100k+ row sheets
+                if not has_value:
+                    continue  # blankrows default: skip rows without any value
+                if row_no == 1:
+                    for ci, val in cells.items():
+                        if val is not None and val != '':
+                            headers[ci] = str(val)
+                    continue
+                if not headers:
+                    continue
+                # sheet_to_json defval:'': every header column gets a key on every row
+                obj: dict[str, Any] = {h: '' for h in headers.values()}
+                for ci, val in cells.items():
+                    h = headers.get(ci)
+                    if h is None:
+                        continue
+                    obj[h] = val
+                yield obj
+    finally:
+        zf.close()
+
+
 def sheet_rows(data: bytes) -> list[dict[str, Any]]:
     """Read the first worksheet into sheet_to_json(defval: '') row dicts."""
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    infos = zf.infolist()
-    if len(infos) > MAX_ZIP_MEMBERS:
-        raise ValueError('Workbook has too many entries')
-    total = sum(i.file_size for i in infos)
-    if total > MAX_TOTAL_INFLATED:
-        raise ValueError('Workbook is too large')
-    shared = _load_shared_strings(zf)
-    path = _first_sheet_path(zf)
-
-    headers: dict[int, str] = {}
-    rows: list[dict[str, Any]] = []
-    last_r = 0
-    with zf.open(path) as fh:
-        # iterparse on a file handle: rows are the events we materialize.
-        for _event, row_el in ET.iterparse(fh, events=('end',)):
-            if row_el.tag.rsplit('}', 1)[-1] != 'row':
-                continue
-            r_attr = row_el.get('r')
-            row_no = int(r_attr) if r_attr else last_r + 1
-            last_r = row_no
-            cells: dict[int, Any] = {}
-            has_value = False
-            for c in row_el:
-                if c.tag.rsplit('}', 1)[-1] != 'c':
-                    continue
-                ref = c.get('r') or ''
-                ci = _col_index(ref)
-                if ci < 0:
-                    continue
-                val = _cell_value(c, shared)
-                cells[ci] = val
-                if val is not None:
-                    has_value = True
-            row_el.clear()  # keep memory flat for 100k+ row sheets
-            if not has_value:
-                continue  # blankrows default: skip rows without any value
-            if row_no == 1:
-                for ci, val in cells.items():
-                    if val is not None and val != '':
-                        headers[ci] = str(val)
-                continue
-            if not headers:
-                continue
-            # sheet_to_json defval:'': every header column gets a key on every row
-            obj: dict[str, Any] = {h: '' for h in headers.values()}
-            for ci, val in cells.items():
-                h = headers.get(ci)
-                if h is None:
-                    continue
-                obj[h] = val
-            rows.append(obj)
-    return rows
+    return list(iter_rows(data))

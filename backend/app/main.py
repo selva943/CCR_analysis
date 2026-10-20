@@ -15,10 +15,13 @@ Endpoints
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import io
 import json
+import os
+import tempfile
 import time
 from datetime import date
 from typing import Annotated
@@ -59,6 +62,19 @@ def _require_db() -> None:
                    'python backend/scripts/import_rest.py instead')
 
 
+class SheetError(Exception):
+    """The workbook parsed into a failure report (e.g. missing columns).
+
+    Raised inside the COPY transaction so a partial write rolls back, while
+    carrying the report through to the job record.
+    """
+
+    def __init__(self, error: str, report: dict) -> None:
+        super().__init__(error)
+        self.error = error
+        self.report = report
+
+
 # --------------------------------------------------------------------------
 # Import
 # --------------------------------------------------------------------------
@@ -82,52 +98,69 @@ def import_file(
             raise
         imported_by = imported_by or 'import_token'
     _require_db()
-    raw = file.file.read()
     max_bytes = config.MAX_UPLOAD_MB * 1024 * 1024
-    if len(raw) > max_bytes:
-        raise HTTPException(status_code=413, detail='file too large')
-    if not raw:
-        raise HTTPException(status_code=400, detail='empty file')
 
-    file_name = file.filename or 'upload.xlsx'
-    file_hash = hashlib.sha256(raw).hexdigest()
-    force_b = str(force).lower() in ('1', 'true', 'yes') if force else False
-    if not force_b:
-        existing = db.find_job_by_hash(file_hash)
-        if existing:
-            if not existing.get('active'):
-                existing = db.reactivate_job(existing['id']) or existing
-            return {'job': existing, 'idempotent': True}
-
-    job = db.create_job(file_name, file_hash, imported_by)
-    job_id = job['id']
-    db.mark_processing(job_id)
-    t0 = time.time()
-
+    # Spool the upload to disk in 1MB chunks while hashing it — the workbook is
+    # never held in memory (a 23MB file is 170k+ rows once expanded, and the
+    # free Render instance only has 512MB).
+    fd, tmp_path = tempfile.mkstemp(prefix='ccr-upload-', suffix='.xlsx')
+    digest = hashlib.sha256()
+    size = 0
     try:
-        rows = xlsxio.sheet_rows(raw)
-        result = ccr_parse.process_sheet(rows)
-    except Exception as exc:  # noqa: BLE001 — surfaced to the job record
-        return {'job': db.fail_job(job_id, f'{type(exc).__name__}: {exc}')}
+        with os.fdopen(fd, 'wb') as tmp:
+            while True:
+                chunk = file.file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(status_code=413, detail='file too large')
+                digest.update(chunk)
+                tmp.write(chunk)
+        if not size:
+            raise HTTPException(status_code=400, detail='empty file')
 
-    report = result['report']
-    visits = result['visits']
-    if result['error']:
-        return {'job': db.fail_job(job_id, result['error'], report=report,
-                                   total_rows=report.get('totalRows', 0),
-                                   failed_rows=report.get('totalRows', 0))}
+        file_name = file.filename or 'upload.xlsx'
+        file_hash = digest.hexdigest()
+        force_b = str(force).lower() in ('1', 'true', 'yes') if force else False
+        if not force_b:
+            existing = db.find_job_by_hash(file_hash)
+            if existing:
+                if not existing.get('active'):
+                    existing = db.reactivate_job(existing['id']) or existing
+                return {'job': existing, 'idempotent': True}
 
-    try:
-        db.copy_visits(job_id, visits, source_file=file_name)
+        job = db.create_job(file_name, file_hash, imported_by)
+        job_id = job['id']
+        db.mark_processing(job_id)
+        t0 = time.time()
+
+        # Rows stream off the workbook and visits stream straight into COPY —
+        # only one chunk of visits is ever in flight (see db.visit_writer).
+        try:
+            with contextlib.closing(xlsxio.iter_rows(tmp_path)) as rows, \
+                    db.visit_writer(job_id, file_name) as write:
+                result = ccr_parse.process_sheet(rows, sink=write)
+                if result['error']:
+                    raise SheetError(result['error'], result['report'])
+        except SheetError as exc:
+            return {'job': db.fail_job(job_id, exc.error, report=exc.report,
+                                       total_rows=exc.report.get('totalRows', 0),
+                                       failed_rows=exc.report.get('totalRows', 0))}
+        except Exception as exc:  # noqa: BLE001 — surfaced to the job record
+            return {'job': db.fail_job(job_id, f'{type(exc).__name__}: {exc}')}
+
+        report = result['report']
         job = db.complete_job(job_id, report=report,
                               total_rows=report['totalRows'],
-                              processed_rows=len(visits),
+                              processed_rows=result['count'],
                               failed_rows=report['totalRows'] - report['validRows'])
-    except Exception as exc:  # noqa: BLE001
-        return {'job': db.fail_job(job_id, f'{type(exc).__name__}: {exc}', report=report)}
 
-    job['parse_seconds'] = round(time.time() - t0, 2)
-    return {'job': job, 'idempotent': False}
+        job['parse_seconds'] = round(time.time() - t0, 2)
+        return {'job': job, 'idempotent': False}
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
 
 
 @app.get('/api/jobs')

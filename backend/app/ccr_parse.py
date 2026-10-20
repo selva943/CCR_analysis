@@ -11,7 +11,9 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+from collections.abc import Callable, Iterable
 from decimal import Decimal, ROUND_HALF_DOWN, ROUND_HALF_UP, localcontext
+from itertools import chain
 from typing import Any
 
 LT_LAT, GT_LAT, LT_LON, GT_LON = 8.0, 37.0, 68.0, 97.0
@@ -288,10 +290,17 @@ def js_string_trim(v: Any) -> str:
     return js_string(v).strip()
 
 
-def process_sheet(rows: list[dict]) -> dict:
-    """Port of data.js processSheet(rows). Returns {report, visits, error}."""
+def process_sheet(rows: Iterable[dict], sink: Callable[[dict], None] | None = None) -> dict:
+    """Port of data.js processSheet(rows). Returns {report, visits, error, count}.
+
+    `rows` may be a list or any iterator of row dicts (streaming import — the
+    sheet is never materialized). When `sink` is given each visit is handed to
+    it as soon as it is built instead of being collected, so `visits` comes back
+    empty and `count` carries the number emitted; the caller then owns ordering
+    (the report/COPY path does not depend on the pre-sort — see db.visit_writer).
+    """
     report: dict[str, Any] = {
-        'totalRows': len(rows),
+        'totalRows': 0,
         'validRows': 0,
         'duplicateRows': 0,
         'missingDate': 0,
@@ -314,10 +323,12 @@ def process_sheet(rows: list[dict]) -> dict:
         'flags': [],
     }
 
-    if not rows:
+    it = iter(rows)
+    first = next(it, None)
+    if first is None:
         raise ValueError('Empty sheet')
 
-    keys = list(rows[0].keys())
+    keys = list(first.keys())
     mapped: dict[str, str] = {}
     for k in keys:
         n = norm_key(k)
@@ -327,7 +338,10 @@ def process_sheet(rows: list[dict]) -> dict:
     missing_required = [t for t in REQUIRE if t not in mapped]
     if missing_required:
         report['missingCols'] = missing_required
-        return {'report': report, 'visits': [],
+        # Nothing was emitted; count the rest so the failed job still reports
+        # the true sheet size (rows are dropped, not collected).
+        report['totalRows'] = 1 + sum(1 for _ in it)
+        return {'report': report, 'visits': [], 'count': 0,
                 'error': 'Required columns missing: ' + ', '.join(missing_required)}
 
     def cell(row: dict, logical: str):
@@ -340,10 +354,15 @@ def process_sheet(rows: list[dict]) -> dict:
             return row[h]
         return ''
 
-    visits: list[dict] = []
+    visits: list[dict] | None = [] if sink is None else None
     dup_set: set[str] = set()
+    rows_seen = 0
+    count = 0
 
-    for r in rows:
+    # `first` doubles as the header row AND the first data row (sheet_to_json
+    # semantics) — it has to go through the loop like any other row.
+    for r in chain((first,), it):
+        rows_seen += 1
         date_obj = to_date(cell(r, 'date'))
         dse_code = js_string_trim(cell(r, 'dse_code'))
         dse_name = js_string_trim(cell(r, 'dse_name'))
@@ -488,12 +507,18 @@ def process_sheet(rows: list[dict]) -> dict:
             'visit_p3m': to_num(cell(r, 'visit_p3m_ach')),
             'visit_ipdp': to_num(cell(r, 'visit_ip_dp_ach')),
         }
-        visits.append(visit)
         visit['_is_valid'] = is_valid
         visit['_dup_key'] = dup_key
+        if sink is None:
+            assert visits is not None
+            visits.append(visit)
+        else:
+            sink(visit)  # emitted with _is_valid/_dup_key already stamped
+        count += 1
         if is_valid:
             report['validRows'] += 1
 
+    report['totalRows'] = rows_seen
     report['invalidIntime'] = report['missingIntime']
     if not report['flags']:
         if report['missingIntime'] / max(1, report['totalRows']) > 0.05:
@@ -501,6 +526,9 @@ def process_sheet(rows: list[dict]) -> dict:
                 'The intime column appears to contain non-standard elapsed time values; '
                 'daily field start time is taken from day_start_time for discipline scoring.')
     # JS: stable sort by dateObj (ascending). Python's sort is stable; the key is
-    # the ISO date (monotone with dateObj for any timezone).
-    visits.sort(key=lambda v: v['date'])
-    return {'report': report, 'visits': visits, 'error': None}
+    # the ISO date (monotone with dateObj for any timezone). Streaming imports
+    # skip it: the rows are written straight through and the readers order by
+    # (business_date, id), which reproduces exactly this tie-break order.
+    if visits is not None:
+        visits.sort(key=lambda v: v['date'])
+    return {'report': report, 'visits': visits or [], 'count': count, 'error': None}

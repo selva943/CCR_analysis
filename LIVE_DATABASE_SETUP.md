@@ -102,11 +102,19 @@ JWT; `import_rest.py` uses the service_role key).
 
 ```
 xlsx file
-  → xlsxio.sheet_rows(raw)         # rows as row-1-keyed dicts (SheetJS parity)
-  → ccr_parse.process_sheet(rows)  # normalize + validate → visit objects + report
-  → db.copy_visits(job_id, visits) # COPY bulk insert into ccr_raw
+  → upload spooled to a temp file (1MB chunks, hashed on the way) — the
+    workbook itself is never held in RAM
+  → xlsxio.iter_rows(path)           # rows yielded one at a time (SheetJS parity)
+  → ccr_parse.process_sheet(rows, sink=write)   # normalize + validate → report
+  → db.visit_writer(job_id) write()  # COPY bulk insert, chunk by chunk
   → ccr_import_jobs row COMPLETED + active=true
 ```
+
+The whole import is streamed (rows off disk → visits into COPY), so peak memory
+stays flat (~55MB measured on the 23MB / 85k-row MTD_CCR.xlsx) instead of
+materializing every row twice — the free Render instance is capped at 512MB.
+`xlsxio.sheet_rows()` / `ccr_parse.process_sheet(list)` (no sink) still return
+full lists for the offline scripts and the parity tests.
 
 Exactly one job is `active` at a time (partial unique index
 `ccr_import_jobs_one_active`). Activating a new import deactivates the previous
