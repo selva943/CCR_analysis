@@ -212,15 +212,18 @@
     return getVisits({ onRoute: 'ALL' });
   }
 
-  // Uploads an xlsx to the backend; resolves to the import job record.
+  // Uploads an xlsx to the backend; resolves to the finished import job record.
+  // POST /api/import only spools the file and starts a background worker
+  // (Render kills requests that run for minutes), so the response job is
+  // PROCESSING and we poll /api/jobs/{id} until it COMPLETES or FAILS.
+  const JOB_POLL_MS = 3000;
+  const JOB_TIMEOUT_MS = 30 * 60 * 1000;
+
   async function importXlsx(file) {
     if (!apiConfigured()) throw new Error('Backend not configured (apiBase in config.js)');
     const fd = new FormData();
     fd.append('file', file);
-    const headers = {};
-    const tok = NS.auth && NS.auth.accessToken && NS.auth.accessToken();
-    if (tok) headers['Authorization'] = 'Bearer ' + tok;
-    if (cfg().importToken) headers['X-Import-Token'] = cfg().importToken;
+    const headers = authHeaders();
     const r = await fetch(apiBase() + '/api/import', { method: 'POST', body: fd, headers });
     let body = null;
     try { body = await r.json(); } catch (_) { /* non-JSON error body */ }
@@ -229,7 +232,39 @@
       const detail = body && body.detail ? JSON.stringify(body.detail) : '';
       throw new Error('Import failed (HTTP ' + r.status + ') ' + detail + (r.status === 403 ? ' — admin role required to process data' : ''));
     }
-    return body.job;
+    if (!body || !body.job) throw new Error('Import failed — no job returned');
+    if (body.idempotent || body.job.status === 'COMPLETED' || body.job.status === 'FAILED') {
+      return body.job;
+    }
+    return waitForJob(body.job.id);
+  }
+
+  async function waitForJob(jobId) {
+    const url = apiBase() + '/api/jobs/' + encodeURIComponent(jobId);
+    const deadline = Date.now() + JOB_TIMEOUT_MS;
+    for (;;) {
+      try {
+        const r = await fetch(url, { headers: authHeaders() });
+        const body = await r.json();
+        const job = body && body.job;
+        if (r.ok && job) {
+          if (job.status === 'COMPLETED') return job;
+          if (job.status === 'FAILED') return job;
+        }
+      } catch (_) { /* transient poll error — keep trying */ }
+      if (Date.now() > deadline) {
+        throw new Error('Import timed out after 30 minutes — check the server logs');
+      }
+      await new Promise(res => setTimeout(res, JOB_POLL_MS));
+    }
+  }
+
+  function authHeaders() {
+    const headers = {};
+    const tok = NS.auth && NS.auth.accessToken && NS.auth.accessToken();
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    if (cfg().importToken) headers['X-Import-Token'] = cfg().importToken;
+    return headers;
   }
 
   async function backendHealth() {

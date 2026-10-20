@@ -116,6 +116,11 @@ materializing every row twice — the free Render instance is capped at 512MB.
 `xlsxio.sheet_rows()` / `ccr_parse.process_sheet(list)` (no sink) still return
 full lists for the offline scripts and the parity tests.
 
+The upload request only spools the file and starts a worker thread: `POST
+/api/import` responds immediately with the job in `PROCESSING`, and the
+dashboard polls `GET /api/jobs/{id}` until `COMPLETED`/`FAILED` (Render kills
+HTTP requests long before a real workbook finishes loading).
+
 Exactly one job is `active` at a time (partial unique index
 `ccr_import_jobs_one_active`). Activating a new import deactivates the previous
 one. Re-uploading the same file (same `file_hash`) is **idempotent** — the

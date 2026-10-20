@@ -22,6 +22,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import time
 from datetime import date
 from typing import Annotated
@@ -79,6 +80,49 @@ class SheetError(Exception):
 # Import
 # --------------------------------------------------------------------------
 
+def _run_import(tmp_path: str, job_id: str, file_name: str) -> None:
+    """Parse + COPY for one import on a worker thread.
+
+    A real workbook takes minutes to parse and load, but Render cuts HTTP
+    requests off long before that — so POST /api/import only spools the file
+    to disk, starts this worker and returns the PROCESSING job immediately;
+    the dashboard polls GET /api/jobs/{id}. The worker owns the temp file and
+    unlinks it when it is done.
+    """
+    t0 = time.time()
+    try:
+        try:
+            with contextlib.closing(xlsxio.iter_rows(tmp_path)) as rows, \
+                    db.visit_writer(job_id, file_name) as write:
+                result = ccr_parse.process_sheet(rows, sink=write)
+                if result['error']:
+                    raise SheetError(result['error'], result['report'])
+        except SheetError as exc:
+            db.fail_job(job_id, exc.error, report=exc.report,
+                        total_rows=exc.report.get('totalRows', 0),
+                        failed_rows=exc.report.get('totalRows', 0))
+            return
+        except Exception as exc:  # noqa: BLE001 — surfaced to the job record
+            db.fail_job(job_id, f'{type(exc).__name__}: {exc}')
+            return
+
+        report = result['report']
+        db.complete_job(job_id, report=report,
+                        total_rows=report['totalRows'],
+                        processed_rows=result['count'],
+                        failed_rows=report['totalRows'] - report['validRows'])
+        print(f'[import] {job_id} completed in {round(time.time() - t0, 2)}s '
+              f'({result["count"]} visits)', flush=True)
+    except Exception as exc:  # noqa: BLE001 — last-resort guard (never lose the job)
+        with contextlib.suppress(Exception):
+            db.fail_job(job_id, f'{type(exc).__name__}: {exc}')
+        print(f'[import] {job_id} crashed: {type(exc).__name__}: {exc}',
+              flush=True)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+
+
 @app.post('/api/import')
 def import_file(
     request: Request,
@@ -106,6 +150,7 @@ def import_file(
     fd, tmp_path = tempfile.mkstemp(prefix='ccr-upload-', suffix='.xlsx')
     digest = hashlib.sha256()
     size = 0
+    handed_off = False
     try:
         with os.fdopen(fd, 'wb') as tmp:
             while True:
@@ -133,46 +178,33 @@ def import_file(
         job = db.create_job(file_name, file_hash, imported_by)
         job_id = job['id']
         db.mark_processing(job_id)
-        t0 = time.time()
 
         # Rows stream off the workbook and visits stream straight into COPY —
-        # only one chunk of visits is ever in flight (see db.visit_writer).
-        try:
-            with contextlib.closing(xlsxio.iter_rows(tmp_path)) as rows, \
-                    db.visit_writer(job_id, file_name) as write:
-                result = ccr_parse.process_sheet(rows, sink=write)
-                if result['error']:
-                    raise SheetError(result['error'], result['report'])
-        except SheetError as exc:
-            return {'job': db.fail_job(job_id, exc.error, report=exc.report,
-                                       total_rows=exc.report.get('totalRows', 0),
-                                       failed_rows=exc.report.get('totalRows', 0))}
-        except Exception as exc:  # noqa: BLE001 — surfaced to the job record
-            return {'job': db.fail_job(job_id, f'{type(exc).__name__}: {exc}')}
-
-        report = result['report']
-        job = db.complete_job(job_id, report=report,
-                              total_rows=report['totalRows'],
-                              processed_rows=result['count'],
-                              failed_rows=report['totalRows'] - report['validRows'])
-
-        job['parse_seconds'] = round(time.time() - t0, 2)
-        return {'job': job, 'idempotent': False}
+        # only one chunk of visits is ever in flight (see db.visit_writer) — but
+        # all of it runs on a worker thread, because Render would otherwise kill
+        # the request long before the import finishes.
+        handed_off = True
+        threading.Thread(target=_run_import, args=(tmp_path, job_id, file_name),
+                         name=f'ccr-import-{job_id[:8]}', daemon=True).start()
+        return {'job': db.get_job(job_id) or job, 'idempotent': False}
     finally:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
+        if not handed_off:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
 
 
 @app.get('/api/jobs')
-def jobs(request: Request, limit: Annotated[int, Query(ge=1, le=100)] = 20) -> dict:
-    auth.require_user(request)
+def jobs(limit: Annotated[int, Query(ge=1, le=100)] = 20) -> dict:
+    # Public read — the dashboard uses a local employee login (no Supabase
+    # JWT) and polls these to follow an in-flight import. Writes stay gated.
     _require_db()
     return {'jobs': db.list_jobs(limit)}
 
 
 @app.get('/api/jobs/{job_id}')
-def job_status(request: Request, job_id: str) -> dict:
-    auth.require_user(request)
+def job_status(job_id: str) -> dict:
+    # Public read — see /api/jobs above; the import POST returns immediately
+    # with a PROCESSING job and the client polls this until COMPLETED/FAILED.
     _require_db()
     job = db.get_job(job_id)
     if not job:
