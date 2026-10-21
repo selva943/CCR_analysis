@@ -120,6 +120,19 @@ def _psycopg_json(v: dict | None):
     return Jsonb(v)
 
 
+def vacuum_analyze() -> None:
+    """Refresh planner stats right after a big import (own autocommit
+    connection — VACUUM may not run inside a transaction block, and the pool's
+    session must stay clean). Autovacuum would get to this eventually, but the
+    browser starts loading the dashboard the moment the job goes COMPLETED, and
+    with stale stats the visit RPCs on the 1M+ row table can blow their
+    statement timeout."""
+    with psycopg.connect(config.DATABASE_URL, autocommit=True,
+                         application_name='ccr-backend-vacuum') as c:
+        with c.cursor() as cur:
+            cur.execute('vacuum (analyze) public.ccr_raw')
+
+
 def complete_job(job_id: str, report: dict, total_rows: int, processed_rows: int,
                  failed_rows: int, activate: bool = True) -> dict:
     with conn() as c, c.transaction():

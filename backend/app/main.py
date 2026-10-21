@@ -107,6 +107,14 @@ def _run_import(tmp_path: str, job_id: str, file_name: str) -> None:
             return
 
         report = result['report']
+        # Stats must be fresh before the job goes COMPLETED: the dashboard
+        # starts loading the instant it sees COMPLETED, and autovacuum's analyze
+        # pass on the 1M+ row table can starve those RPCs into a statement
+        # timeout. Best-effort — a failed VACUUM must not fail the import.
+        try:
+            db.vacuum_analyze()
+        except Exception as exc:  # noqa: BLE001 — stats refresh is best-effort
+            print(f'[import] {job_id} vacuum/analyze skipped: {exc}', flush=True)
         db.complete_job(job_id, report=report,
                         total_rows=report['totalRows'],
                         processed_rows=result['count'],

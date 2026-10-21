@@ -77,7 +77,25 @@
     while (map.size > max) map.delete(map.keys().next().value);
   }
 
+  // Supabase's free instance is shared: right after a big import it is busy
+  // (autovacuum on the 1M+ row table) and a statement can exceed its timeout
+  // (HTTP 500 / 57014). The read-only RPCs are idempotent, so retry those.
+  const RPC_RETRY_DELAYS = [1500, 4000];
+
   async function rpc(name, params) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await rpcOnce(name, params);
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        const transient = /HTTP 5\d\d|network|failed to fetch|timed?\s?out/i.test(msg);
+        if (!transient || attempt >= RPC_RETRY_DELAYS.length) throw e;
+        await new Promise(res => setTimeout(res, RPC_RETRY_DELAYS[attempt]));
+      }
+    }
+  }
+
+  async function rpcOnce(name, params) {
     const headers = { 'apikey': anonKey(), 'Content-Type': 'application/json' };
     const tok = NS.auth && NS.auth.accessToken && NS.auth.accessToken();
     if (tok) headers['Authorization'] = 'Bearer ' + tok;
