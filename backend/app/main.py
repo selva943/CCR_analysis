@@ -94,7 +94,17 @@ def _run_import(tmp_path: str, job_id: str, file_name: str) -> None:
         try:
             with contextlib.closing(xlsxio.iter_rows(tmp_path)) as rows, \
                     db.visit_writer(job_id, file_name) as write:
-                result = ccr_parse.process_sheet(rows, sink=write)
+                progress_interval = 25000
+                processed_rows = 0
+
+                def write_with_progress(visit: dict) -> None:
+                    nonlocal processed_rows
+                    write(visit)
+                    processed_rows += 1
+                    if processed_rows % progress_interval == 0:
+                        db.update_job_progress(job_id, processed_rows)
+
+                result = ccr_parse.process_sheet(rows, sink=write_with_progress)
                 if result['error']:
                     raise SheetError(result['error'], result['report'])
         except SheetError as exc:

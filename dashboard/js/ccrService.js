@@ -237,7 +237,7 @@
   const JOB_POLL_MS = 3000;
   const JOB_TIMEOUT_MS = 30 * 60 * 1000;
 
-  async function importXlsx(file) {
+  async function importXlsx(file, onProgress) {
     if (!apiConfigured()) throw new Error('Backend not configured (apiBase in config.js)');
     const fd = new FormData();
     fd.append('file', file);
@@ -254,10 +254,10 @@
     if (body.idempotent || body.job.status === 'COMPLETED' || body.job.status === 'FAILED') {
       return body.job;
     }
-    return waitForJob(body.job.id);
+    return waitForJob(body.job.id, onProgress);
   }
 
-  async function waitForJob(jobId) {
+  async function waitForJob(jobId, onProgress) {
     const url = apiBase() + '/api/jobs/' + encodeURIComponent(jobId);
     const deadline = Date.now() + JOB_TIMEOUT_MS;
     for (;;) {
@@ -266,6 +266,7 @@
         const body = await r.json();
         const job = body && body.job;
         if (r.ok && job) {
+          if (job.status === 'PROCESSING' && onProgress) onProgress(job);
           if (job.status === 'COMPLETED') return job;
           if (job.status === 'FAILED') return job;
         }

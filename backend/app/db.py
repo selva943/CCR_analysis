@@ -96,6 +96,15 @@ def mark_processing(job_id: str) -> None:
                where id = %s''', (job_id,))
 
 
+def update_job_progress(job_id: str, processed_rows: int) -> None:
+    with conn() as c, c.cursor() as cur:
+        cur.execute(
+            '''update public.ccr_import_jobs
+               set processed_rows = %s
+               where id = %s and status = 'PROCESSING' ''',
+            (processed_rows, job_id))
+
+
 def fail_job(job_id: str, error: str, report: dict | None = None,
              total_rows: int | None = None, failed_rows: int | None = None) -> dict:
     with conn() as c, c.cursor() as cur:

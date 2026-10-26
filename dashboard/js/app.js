@@ -575,7 +575,12 @@
     await yieldUI();
     showProgress();
     try {
-      const job = await NS.ccr.importXlsx(file);
+      const job = await NS.ccr.importXlsx(file, progressJob => {
+        const count = Number(progressJob.processed_rows) || 0;
+        setSlideStatus(count
+          ? 'Import in progress — ' + M.fmtNum(count) + ' visits processed so far…'
+          : 'Upload received — preparing workbook for import…', '');
+      });
       if (job.status === 'FAILED') throw new Error(job.error_message || 'import failed');
       setSlideStatus('Imported ' + M.fmtNum(job.processed_rows || 0) + ' visits — building dashboard…', '');
       await yieldUI();
