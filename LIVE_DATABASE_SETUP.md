@@ -5,10 +5,13 @@ This document explains how to run the MTD CCR DSE analytics dashboard as a
 browser" mode.
 
 The live stack is **already scaffolded** in this repository (Supabase schema,
-RPC functions, a FastAPI backend and a browser data service), and now includes
-**login with roles** (1 admin + 7 viewers). This guide covers the architecture,
-the exact setup steps, the data flow, the endpoints and the things that most
-often go wrong.
+RPC functions, a FastAPI backend and a browser data service). The current
+dashboard uses a local employee-code login UI; Supabase reads use the public
+anon key, so that UI is not database-level access control. This guide covers
+the architecture, setup steps, data flow, endpoints and common issues.
+
+For a fresh, empty replacement Supabase project, follow
+[NEW_SUPABASE_PROJECT.md](./NEW_SUPABASE_PROJECT.md).
 
 ---
 
@@ -73,7 +76,7 @@ in `public.user_roles`; RLS + JWT verification enforce them. See Step F.
 | Layer | File(s) | Purpose |
 |---|---|---|
 | DB schema | `supabase/migrations/0001_ccr_schema.sql` | `ccr_import_jobs`, `ccr_raw`, RLS, indexes, `get_ccr_dashboard` v1 |
-| DB perf/RPC | `supabase/migrations/0002_ccr_perf.sql` | statement timeouts, `get_ccr_dashboard` v2, `get_ccr_visits` |
+| DB perf/RPC | `supabase/migrations/0002_ccr_perf.sql` | statement timeouts and `get_ccr_dashboard` v2 |
 | DB perf fix | `supabase/migrations/0003_visits_json.sql` | `get_ccr_visits` returns `json` (not `jsonb`) → ~10× faster |
 | DB auth | `supabase/migrations/0004_auth.sql` | `user_roles`, `is_admin()`, `get_my_role()`, anon revoke, admin-only writes |
 | DB access log | `supabase/migrations/0005_access_log.sql` | `access_log` table, `log_access()`, admin-only `get_access_report()` (daily usage) |
